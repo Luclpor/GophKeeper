@@ -17,6 +17,8 @@ import (
 	"github.com/Luclpor/GophKeeper/internal/client"
 	"github.com/Luclpor/GophKeeper/internal/server"
 	"github.com/Luclpor/GophKeeper/internal/vault"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Version is the semantic version printed by the version command.
@@ -27,6 +29,11 @@ var BuildDate = "unknown"
 
 // Run executes the CLI with args and returns a process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
+	logger := newCLILogger(stderr)
+	defer func() {
+		_ = logger.Sync()
+	}()
+
 	if len(args) == 0 {
 		printUsage(stderr)
 		return 2
@@ -34,25 +41,25 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "server":
-		return runServer(args[1:], stdout, stderr)
+		return runServer(args[1:], stdout, stderr, logger)
 	case "version":
 		return runVersion(stdout)
 	case "register":
-		return runRegister(args[1:], stdout, stderr)
+		return runRegister(args[1:], stdout, stderr, logger)
 	case "login":
-		return runLogin(args[1:], stdout, stderr)
+		return runLogin(args[1:], stdout, stderr, logger)
 	case "add":
-		return runAdd(args[1:], stdout, stderr)
+		return runAdd(args[1:], stdout, stderr, logger)
 	case "list":
-		return runList(args[1:], stdout, stderr)
+		return runList(args[1:], stdout, stderr, logger)
 	case "get":
-		return runGet(args[1:], stdout, stderr)
+		return runGet(args[1:], stdout, stderr, logger)
 	case "delete":
-		return runDelete(args[1:], stdout, stderr)
+		return runDelete(args[1:], stdout, stderr, logger)
 	case "sync":
-		return runSync(args[1:], stdout, stderr)
+		return runSync(args[1:], stdout, stderr, logger)
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
+		logger.Error("unknown command", zap.String("command", args[0]))
 		printUsage(stderr)
 		return 2
 	}
@@ -63,7 +70,7 @@ func runVersion(stdout io.Writer) int {
 	return 0
 }
 
-func runServer(args []string, stdout, stderr io.Writer) int {
+func runServer(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -79,7 +86,7 @@ func runServer(args []string, stdout, stderr io.Writer) int {
 
 	store, err := server.NewFileStore(*dataPath)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create server store", zap.Error(err))
 		return 1
 	}
 
@@ -87,19 +94,20 @@ func runServer(args []string, stdout, stderr io.Writer) int {
 	if len(secret) == 0 {
 		secret = make([]byte, 32)
 		if _, err := rand.Read(secret); err != nil {
-			fmt.Fprintln(stderr, err)
+			logger.Error("generate token secret", zap.Error(err))
 			return 1
 		}
-		fmt.Fprintln(stderr, "token secret generated for this server process")
+		logger.Warn("token secret generated for this server process")
 	}
 
 	handler, err := server.NewRouter(server.Config{
 		Store:       store,
 		TokenSecret: secret,
 		TokenTTL:    *tokenTTL,
+		Logger:      logger,
 	})
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create server router", zap.Error(err))
 		return 1
 	}
 
@@ -108,10 +116,10 @@ func runServer(args []string, stdout, stderr io.Writer) int {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	fmt.Fprintf(stdout, "GophKeeper server listening on %s\n", *addr)
+	logger.Info("gophkeeper server listening", zap.String("addr", *addr), zap.String("data", *dataPath))
 	if *tlsCert != "" || *tlsKey != "" {
 		if *tlsCert == "" || *tlsKey == "" {
-			fmt.Fprintln(stderr, "both --tls-cert and --tls-key are required for TLS")
+			logger.Error("invalid tls configuration", zap.String("error", "both --tls-cert and --tls-key are required for TLS"))
 			return 2
 		}
 		err = httpServer.ListenAndServeTLS(*tlsCert, *tlsKey)
@@ -119,13 +127,13 @@ func runServer(args []string, stdout, stderr io.Writer) int {
 		err = httpServer.ListenAndServe()
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(stderr, err)
+		logger.Error("server stopped with error", zap.Error(err))
 		return 1
 	}
 	return 0
 }
 
-func runRegister(args []string, stdout, stderr io.Writer) int {
+func runRegister(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("register", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -136,18 +144,18 @@ func runRegister(args []string, stdout, stderr io.Writer) int {
 
 	api, err := newClient(*serverURL, "")
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	token, err := api.Register(context.Background(), *username, *password)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("register user", zap.Error(err))
 		return 1
 	}
-	return printJSON(stdout, map[string]string{"username": *username, "token": token})
+	return printJSON(stdout, logger, map[string]string{"username": *username, "token": token})
 }
 
-func runLogin(args []string, stdout, stderr io.Writer) int {
+func runLogin(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("login", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -158,18 +166,18 @@ func runLogin(args []string, stdout, stderr io.Writer) int {
 
 	api, err := newClient(*serverURL, "")
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	token, err := api.Login(context.Background(), *username, *password)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("login user", zap.Error(err))
 		return 1
 	}
-	return printJSON(stdout, map[string]string{"username": *username, "token": token})
+	return printJSON(stdout, logger, map[string]string{"username": *username, "token": token})
 }
 
-func runAdd(args []string, stdout, stderr io.Writer) int {
+func runAdd(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("add", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -190,12 +198,12 @@ func runAdd(args []string, stdout, stderr io.Writer) int {
 
 	fieldMap, err := mergeMaps(*fieldsJSON, map[string]string(fields))
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("parse secret fields", zap.Error(err))
 		return 2
 	}
 	metadataMap, err := mergeMaps(*metadataJSON, map[string]string(metadata))
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("parse secret metadata", zap.Error(err))
 		return 2
 	}
 
@@ -205,29 +213,29 @@ func runAdd(args []string, stdout, stderr io.Writer) int {
 		Fields:   fieldMap,
 	}, time.Now().UTC())
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("encrypt record", zap.Error(err))
 		return 1
 	}
 
 	api, err := newClient(*serverURL, *token)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	saved, err := api.PutRecord(context.Background(), record)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("save record", zap.Error(err))
 		return 1
 	}
 
-	return printJSON(stdout, map[string]string{
+	return printJSON(stdout, logger, map[string]string{
 		"id":         saved.ID,
 		"type":       string(saved.Type),
 		"updated_at": saved.UpdatedAt.Format(time.RFC3339),
 	})
 }
 
-func runList(args []string, stdout, stderr io.Writer) int {
+func runList(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -239,12 +247,12 @@ func runList(args []string, stdout, stderr io.Writer) int {
 
 	api, err := newClient(*serverURL, *token)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	records, err := api.ListRecords(context.Background())
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("list records", zap.Error(err))
 		return 1
 	}
 
@@ -252,7 +260,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 	for _, record := range records {
 		secret, err := vault.OpenRecord(*master, record)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			logger.Error("decrypt record", zap.String("record_id", record.ID), zap.Error(err))
 			return 1
 		}
 		output = append(output, recordSummary{
@@ -263,10 +271,10 @@ func runList(args []string, stdout, stderr io.Writer) int {
 			UpdatedAt: record.UpdatedAt,
 		})
 	}
-	return printJSON(stdout, output)
+	return printJSON(stdout, logger, output)
 }
 
-func runGet(args []string, stdout, stderr io.Writer) int {
+func runGet(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("get", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -279,20 +287,20 @@ func runGet(args []string, stdout, stderr io.Writer) int {
 
 	api, err := newClient(*serverURL, *token)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	record, err := api.GetRecord(context.Background(), *id)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("get record", zap.String("record_id", *id), zap.Error(err))
 		return 1
 	}
 	secret, err := vault.OpenRecord(*master, record)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("decrypt record", zap.String("record_id", record.ID), zap.Error(err))
 		return 1
 	}
-	return printJSON(stdout, struct {
+	return printJSON(stdout, logger, struct {
 		ID        string           `json:"id"`
 		Type      vault.DataType   `json:"type"`
 		UpdatedAt time.Time        `json:"updated_at"`
@@ -305,7 +313,7 @@ func runGet(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
-func runDelete(args []string, stdout, stderr io.Writer) int {
+func runDelete(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("delete", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -317,18 +325,18 @@ func runDelete(args []string, stdout, stderr io.Writer) int {
 
 	api, err := newClient(*serverURL, *token)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	tombstone, err := api.DeleteRecord(context.Background(), *id)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("delete record", zap.String("record_id", *id), zap.Error(err))
 		return 1
 	}
-	return printJSON(stdout, tombstone)
+	return printJSON(stdout, logger, tombstone)
 }
 
-func runSync(args []string, stdout, stderr io.Writer) int {
+func runSync(args []string, stdout, stderr io.Writer, logger *zap.Logger) int {
 	flags := flag.NewFlagSet("sync", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -340,24 +348,24 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 
 	records, err := readLocalRecords(*filePath)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("read local records", zap.String("file", *filePath), zap.Error(err))
 		return 1
 	}
 	api, err := newClient(*serverURL, *token)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("create api client", zap.Error(err))
 		return 1
 	}
 	merged, err := api.SyncRecords(context.Background(), records)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("sync records", zap.Error(err))
 		return 1
 	}
 	if err := writeLocalRecords(*filePath, merged); err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("write local records", zap.String("file", *filePath), zap.Error(err))
 		return 1
 	}
-	return printJSON(stdout, map[string]int{"records": len(merged)})
+	return printJSON(stdout, logger, map[string]int{"records": len(merged)})
 }
 
 type recordSummary struct {
@@ -453,11 +461,26 @@ func writeLocalRecords(path string, records []vault.Record) error {
 	return nil
 }
 
-func printJSON(stdout io.Writer, value any) int {
+func newCLILogger(stderr io.Writer) *zap.Logger {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderConfig),
+		zapcore.AddSync(stderr),
+		zapcore.InfoLevel,
+	)
+	return zap.New(core)
+}
+
+func printJSON(stdout io.Writer, logger *zap.Logger, value any) int {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
-		fmt.Fprintln(stdout, err)
+		logger.Error("write json output", zap.Error(err))
 		return 1
 	}
 	return 0

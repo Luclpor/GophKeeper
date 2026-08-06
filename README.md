@@ -28,6 +28,9 @@ Run the server:
 go run ./cmd/gophkeeper server --addr :8080 --data ./gophkeeper-server.json
 ```
 
+The server writes structured Zap logs to stderr, including one log entry for
+each HTTP request.
+
 Register and save the returned token:
 
 ```sh

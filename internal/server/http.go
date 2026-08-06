@@ -15,6 +15,7 @@ import (
 	"github.com/Luclpor/GophKeeper/internal/vault"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -33,6 +34,8 @@ type Config struct {
 	TokenSecret []byte
 	// TokenTTL controls bearer token lifetime.
 	TokenTTL time.Duration
+	// Logger receives structured HTTP request logs.
+	Logger *zap.Logger
 }
 
 // App owns the HTTP handlers for one GophKeeper server instance.
@@ -40,6 +43,7 @@ type App struct {
 	store     Store
 	passwords auth.PasswordHasher
 	tokens    auth.TokenManager
+	logger    *zap.Logger
 }
 
 // NewApp constructs an App from Config.
@@ -61,11 +65,15 @@ func NewApp(config Config) (*App, error) {
 	if config.PasswordHasher.Rand == nil {
 		config.PasswordHasher.Rand = rand.Reader
 	}
+	if config.Logger == nil {
+		config.Logger = zap.NewNop()
+	}
 
 	return &App{
 		store:     config.Store,
 		passwords: config.PasswordHasher,
 		tokens:    tokens,
+		logger:    config.Logger,
 	}, nil
 }
 
@@ -83,6 +91,7 @@ func (a *App) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(a.logRequests)
 	r.Use(middleware.Recoverer)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
