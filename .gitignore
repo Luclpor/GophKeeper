@@ -1,0 +1,8 @@
+.idea/
+*.cover
+coverage.out
+/gophkeeper
+/gophkeeper.exe
+/gophkeeper-*
+gophkeeper-server.json
+gophkeeper-client.json
