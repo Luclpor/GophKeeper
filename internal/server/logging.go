@@ -3,37 +3,60 @@ package server
 import (
 	"net/http"
 	"time"
-
-	"github.com/go-chi/chi/v5/middleware"
-	"go.uber.org/zap"
 )
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status       int
+	bytesWritten int
+}
+
+func (w *loggingResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *loggingResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	written, err := w.ResponseWriter.Write(data)
+	w.bytesWritten += written
+	return written, err
+}
 
 func (a *App) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
-		wrapped := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		wrapped := &loggingResponseWriter{ResponseWriter: w}
 
 		next.ServeHTTP(wrapped, r)
 
-		status := wrapped.Status()
+		status := wrapped.status
 		if status == 0 {
 			status = http.StatusOK
 		}
 
-		fields := []zap.Field{
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.Path),
-			zap.Int("status", status),
-			zap.Int("bytes", wrapped.BytesWritten()),
-			zap.Duration("duration", time.Since(startedAt)),
-			zap.String("remote_addr", r.RemoteAddr),
-			zap.String("request_id", middleware.GetReqID(r.Context())),
-			zap.String("user_agent", r.UserAgent()),
-		}
+		level := "info"
 		if status >= http.StatusInternalServerError {
-			a.logger.Error("http request completed", fields...)
-			return
+			level = "error"
 		}
-		a.logger.Info("http request completed", fields...)
+
+		a.logger.Printf(
+			"level=%s msg=%q method=%s path=%q status=%d bytes=%d duration=%s remote_addr=%q request_id=%q user_agent=%q",
+			level,
+			"http request completed",
+			r.Method,
+			r.URL.Path,
+			status,
+			wrapped.bytesWritten,
+			time.Since(startedAt),
+			r.RemoteAddr,
+			requestIDFromContext(r.Context()),
+			r.UserAgent(),
+		)
 	})
 }

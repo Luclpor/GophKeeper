@@ -3,19 +3,19 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/Luclpor/GophKeeper/internal/auth"
 	"github.com/Luclpor/GophKeeper/internal/vault"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"go.uber.org/zap"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -23,13 +23,14 @@ const maxRequestBodyBytes = 1 << 20
 type contextKey string
 
 const usernameContextKey contextKey = "username"
+const requestIDContextKey contextKey = "request_id"
 
 // App owns the HTTP handlers for one GophKeeper server instance.
 type App struct {
 	store     Store
 	passwords auth.PasswordHasher
 	tokens    auth.TokenManager
-	logger    *zap.Logger
+	logger    *log.Logger
 }
 
 type config struct {
@@ -37,7 +38,7 @@ type config struct {
 	passwordHasher auth.PasswordHasher
 	tokenSecret    []byte
 	tokenTTL       time.Duration
-	logger         *zap.Logger
+	logger         *log.Logger
 }
 
 // Option configures an App during construction.
@@ -71,8 +72,8 @@ func WithTokenTTL(ttl time.Duration) Option {
 	}
 }
 
-// WithLogger configures the structured logger used by HTTP middleware.
-func WithLogger(logger *zap.Logger) Option {
+// WithLogger configures the logger used by HTTP middleware.
+func WithLogger(logger *log.Logger) Option {
 	return func(config *config) {
 		config.logger = logger
 	}
@@ -105,7 +106,7 @@ func NewApp(options ...Option) (*App, error) {
 		config.passwordHasher.Rand = rand.Reader
 	}
 	if config.logger == nil {
-		config.logger = zap.NewNop()
+		config.logger = log.New(io.Discard, "", 0)
 	}
 
 	return &App{
@@ -125,33 +126,23 @@ func NewRouter(options ...Option) (http.Handler, error) {
 	return app.Router(), nil
 }
 
-// Router returns the chi-based HTTP API router.
+// Router returns the standard-library HTTP API router.
 func (a *App) Router() http.Handler {
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(a.logRequests)
-	r.Use(middleware.Recoverer)
+	mux := http.NewServeMux()
 
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/auth/register", a.handleRegister)
-		r.Post("/auth/login", a.handleLogin)
+	mux.HandleFunc("POST /api/v1/auth/register", a.handleRegister)
+	mux.HandleFunc("POST /api/v1/auth/login", a.handleLogin)
+	mux.Handle("GET /api/v1/records", a.requireAuth(http.HandlerFunc(a.handleListRecords)))
+	mux.Handle("POST /api/v1/records/sync", a.requireAuth(http.HandlerFunc(a.handleSyncRecords)))
+	mux.Handle("GET /api/v1/records/{id}", a.requireAuth(http.HandlerFunc(a.handleGetRecord)))
+	mux.Handle("PUT /api/v1/records/{id}", a.requireAuth(http.HandlerFunc(a.handlePutRecord)))
+	mux.Handle("DELETE /api/v1/records/{id}", a.requireAuth(http.HandlerFunc(a.handleDeleteRecord)))
 
-		r.Group(func(r chi.Router) {
-			r.Use(a.requireAuth)
-			r.Get("/records", a.handleListRecords)
-			r.Post("/records/sync", a.handleSyncRecords)
-			r.Get("/records/{id}", a.handleGetRecord)
-			r.Put("/records/{id}", a.handlePutRecord)
-			r.Delete("/records/{id}", a.handleDeleteRecord)
-		})
-	})
-
-	return r
+	return a.withRequestID(a.withRealIP(a.logRequests(a.recoverRequests(mux))))
 }
 
 func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +206,7 @@ func (a *App) handleListRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleGetRecord(w http.ResponseWriter, r *http.Request) {
-	record, err := a.store.Record(r.Context(), usernameFromContext(r.Context()), chi.URLParam(r, "id"))
+	record, err := a.store.Record(r.Context(), usernameFromContext(r.Context()), r.PathValue("id"))
 	if err != nil {
 		writeError(w, statusForError(err), err)
 		return
@@ -228,7 +219,7 @@ func (a *App) handlePutRecord(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &record) {
 		return
 	}
-	record.ID = chi.URLParam(r, "id")
+	record.ID = r.PathValue("id")
 
 	saved, err := a.store.UpsertRecord(r.Context(), usernameFromContext(r.Context()), record)
 	if err != nil {
@@ -239,7 +230,7 @@ func (a *App) handlePutRecord(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDeleteRecord(w http.ResponseWriter, r *http.Request) {
-	tombstone, err := a.store.DeleteRecord(r.Context(), usernameFromContext(r.Context()), chi.URLParam(r, "id"), time.Now().UTC())
+	tombstone, err := a.store.DeleteRecord(r.Context(), usernameFromContext(r.Context()), r.PathValue("id"), time.Now().UTC())
 	if err != nil {
 		writeError(w, statusForError(err), err)
 		return
@@ -284,6 +275,60 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 func usernameFromContext(ctx context.Context) string {
 	username, _ := ctx.Value(usernameContextKey).(string)
 	return username
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	requestID, _ := ctx.Value(requestIDContextKey).(string)
+	return requestID
+}
+
+func (a *App) withRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
+
+		ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (a *App) withRealIP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+			if realIP, _, ok := strings.Cut(forwardedFor, ","); ok {
+				r.RemoteAddr = strings.TrimSpace(realIP)
+			} else {
+				r.RemoteAddr = strings.TrimSpace(forwardedFor)
+			}
+		}
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			r.RemoteAddr = realIP
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) recoverRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				a.logger.Printf("level=error msg=%q panic=%q request_id=%q stack=%q", "http request panic recovered", recovered, requestIDFromContext(r.Context()), debug.Stack())
+				writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func newRequestID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

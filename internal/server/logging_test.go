@@ -3,20 +3,19 @@ package server_test
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Luclpor/GophKeeper/internal/auth"
 	"github.com/Luclpor/GophKeeper/internal/server"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestRequestLoggingMiddleware(t *testing.T) {
-	core, logs := observer.New(zapcore.InfoLevel)
+	var logs bytes.Buffer
 	store, err := server.NewFileStore("")
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
@@ -25,7 +24,7 @@ func TestRequestLoggingMiddleware(t *testing.T) {
 		server.WithStore(store),
 		server.WithTokenSecret(bytes.Repeat([]byte{8}, 32)),
 		server.WithTokenTTL(time.Hour),
-		server.WithLogger(zap.New(core)),
+		server.WithLogger(log.New(&logs, "", 0)),
 		server.WithPasswordHasher(auth.PasswordHasher{
 			Rand:       repeatingReader(1),
 			Iterations: 2,
@@ -44,19 +43,16 @@ func TestRequestLoggingMiddleware(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
-	if logs.Len() != 1 {
-		t.Fatalf("logs len = %d, want 1", logs.Len())
-	}
 
-	fields := logs.All()[0].ContextMap()
-	if fields["method"] != http.MethodGet {
-		t.Fatalf("method field = %v, want GET", fields["method"])
+	logLine := logs.String()
+	if !strings.Contains(logLine, `method=GET`) {
+		t.Fatalf("log line = %q, want method field", logLine)
 	}
-	if fields["path"] != "/health" {
-		t.Fatalf("path field = %v, want /health", fields["path"])
+	if !strings.Contains(logLine, `path="/health"`) {
+		t.Fatalf("log line = %q, want path field", logLine)
 	}
-	if fields["status"] != int64(http.StatusOK) {
-		t.Fatalf("status field = %v, want 200", fields["status"])
+	if !strings.Contains(logLine, `status=200`) {
+		t.Fatalf("log line = %q, want status field", logLine)
 	}
 
 	var body map[string]string
