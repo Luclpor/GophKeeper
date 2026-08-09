@@ -24,20 +24,6 @@ type contextKey string
 
 const usernameContextKey contextKey = "username"
 
-// Config contains dependencies and security settings for the HTTP API.
-type Config struct {
-	// Store persists users and encrypted records.
-	Store Store
-	// PasswordHasher hashes and verifies user passwords.
-	PasswordHasher auth.PasswordHasher
-	// TokenSecret is the HMAC key used for bearer tokens.
-	TokenSecret []byte
-	// TokenTTL controls bearer token lifetime.
-	TokenTTL time.Duration
-	// Logger receives structured HTTP request logs.
-	Logger *zap.Logger
-}
-
 // App owns the HTTP handlers for one GophKeeper server instance.
 type App struct {
 	store     Store
@@ -46,40 +32,93 @@ type App struct {
 	logger    *zap.Logger
 }
 
-// NewApp constructs an App from Config.
-func NewApp(config Config) (*App, error) {
-	if config.Store == nil {
+type config struct {
+	store          Store
+	passwordHasher auth.PasswordHasher
+	tokenSecret    []byte
+	tokenTTL       time.Duration
+	logger         *zap.Logger
+}
+
+// Option configures an App during construction.
+type Option func(*config)
+
+// WithStore configures persistent storage for users and encrypted records.
+func WithStore(store Store) Option {
+	return func(config *config) {
+		config.store = store
+	}
+}
+
+// WithPasswordHasher configures password hashing and verification.
+func WithPasswordHasher(passwordHasher auth.PasswordHasher) Option {
+	return func(config *config) {
+		config.passwordHasher = passwordHasher
+	}
+}
+
+// WithTokenSecret configures the HMAC key used for bearer tokens.
+func WithTokenSecret(secret []byte) Option {
+	return func(config *config) {
+		config.tokenSecret = append([]byte(nil), secret...)
+	}
+}
+
+// WithTokenTTL configures bearer token lifetime.
+func WithTokenTTL(ttl time.Duration) Option {
+	return func(config *config) {
+		config.tokenTTL = ttl
+	}
+}
+
+// WithLogger configures the structured logger used by HTTP middleware.
+func WithLogger(logger *zap.Logger) Option {
+	return func(config *config) {
+		config.logger = logger
+	}
+}
+
+// NewApp constructs an App from functional options.
+func NewApp(options ...Option) (*App, error) {
+	config := config{}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+
+	if config.store == nil {
 		return nil, errors.New("store is required")
 	}
-	if len(config.TokenSecret) == 0 {
-		config.TokenSecret = make([]byte, 32)
-		if _, err := rand.Read(config.TokenSecret); err != nil {
+	if len(config.tokenSecret) == 0 {
+		config.tokenSecret = make([]byte, 32)
+		if _, err := rand.Read(config.tokenSecret); err != nil {
 			return nil, fmt.Errorf("read token secret: %w", err)
 		}
 	}
 
-	tokens, err := auth.NewTokenManager(config.TokenSecret, config.TokenTTL)
+	tokens, err := auth.NewTokenManager(config.tokenSecret, config.tokenTTL)
 	if err != nil {
 		return nil, err
 	}
-	if config.PasswordHasher.Rand == nil {
-		config.PasswordHasher.Rand = rand.Reader
+	if config.passwordHasher.Rand == nil {
+		config.passwordHasher.Rand = rand.Reader
 	}
-	if config.Logger == nil {
-		config.Logger = zap.NewNop()
+	if config.logger == nil {
+		config.logger = zap.NewNop()
 	}
 
 	return &App{
-		store:     config.Store,
-		passwords: config.PasswordHasher,
+		store:     config.store,
+		passwords: config.passwordHasher,
 		tokens:    tokens,
-		logger:    config.Logger,
+		logger:    config.logger,
 	}, nil
 }
 
-// NewRouter constructs a ready-to-serve HTTP handler from Config.
-func NewRouter(config Config) (http.Handler, error) {
-	app, err := NewApp(config)
+// NewRouter constructs a ready-to-serve HTTP handler from functional options.
+func NewRouter(options ...Option) (http.Handler, error) {
+	app, err := NewApp(options...)
 	if err != nil {
 		return nil, err
 	}

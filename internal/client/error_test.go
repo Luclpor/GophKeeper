@@ -15,7 +15,7 @@ func TestClientDecodesAPIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	api, err := New(Config{BaseURL: server.URL, Token: "token", HTTPClient: server.Client()})
+	api, err := New(WithBaseURL(server.URL), WithToken("token"), WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}

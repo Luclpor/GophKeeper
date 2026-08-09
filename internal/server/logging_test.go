@@ -21,18 +21,18 @@ func TestRequestLoggingMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
 	}
-	handler, err := server.NewRouter(server.Config{
-		Store:       store,
-		TokenSecret: bytes.Repeat([]byte{8}, 32),
-		TokenTTL:    time.Hour,
-		Logger:      zap.New(core),
-		PasswordHasher: auth.PasswordHasher{
+	handler, err := server.NewRouter(
+		server.WithStore(store),
+		server.WithTokenSecret(bytes.Repeat([]byte{8}, 32)),
+		server.WithTokenTTL(time.Hour),
+		server.WithLogger(zap.New(core)),
+		server.WithPasswordHasher(auth.PasswordHasher{
 			Rand:       repeatingReader(1),
 			Iterations: 2,
 			SaltSize:   16,
 			KeySize:    32,
-		},
-	})
+		}),
+	)
 	if err != nil {
 		t.Fatalf("NewRouter returned error: %v", err)
 	}

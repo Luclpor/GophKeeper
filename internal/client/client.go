@@ -15,21 +15,42 @@ import (
 	"github.com/Luclpor/GophKeeper/internal/vault"
 )
 
-// Config contains connection settings for Client.
-type Config struct {
-	// BaseURL is the server root URL, for example http://localhost:8080.
-	BaseURL string
-	// Token is the bearer token used for authenticated requests.
-	Token string
-	// HTTPClient is the transport used for requests.
-	HTTPClient *http.Client
-}
-
 // Client performs authenticated requests to a GophKeeper server.
 type Client struct {
 	baseURL    *url.URL
 	token      string
 	httpClient *http.Client
+}
+
+type config struct {
+	baseURL    string
+	token      string
+	httpClient *http.Client
+}
+
+// Option configures a Client during construction.
+type Option func(*config)
+
+// WithBaseURL configures the server root URL, for example
+// http://localhost:8080.
+func WithBaseURL(baseURL string) Option {
+	return func(config *config) {
+		config.baseURL = baseURL
+	}
+}
+
+// WithToken configures the bearer token used for authenticated requests.
+func WithToken(token string) Option {
+	return func(config *config) {
+		config.token = token
+	}
+}
+
+// WithHTTPClient configures the transport used for requests.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(config *config) {
+		config.httpClient = httpClient
+	}
 }
 
 type authRequest struct {
@@ -54,26 +75,33 @@ type syncResponse struct {
 	Records []vault.Record `json:"records"`
 }
 
-// New constructs a Client.
-func New(config Config) (*Client, error) {
-	if strings.TrimSpace(config.BaseURL) == "" {
+// New constructs a Client from functional options.
+func New(options ...Option) (*Client, error) {
+	config := config{}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+
+	if strings.TrimSpace(config.baseURL) == "" {
 		return nil, errors.New("base url is required")
 	}
-	parsed, err := url.Parse(config.BaseURL)
+	parsed, err := url.Parse(config.baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse base url: %w", err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, errors.New("base url must include scheme and host")
 	}
-	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	if config.httpClient == nil {
+		config.httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	return &Client{
 		baseURL:    parsed,
-		token:      config.Token,
-		httpClient: config.HTTPClient,
+		token:      config.token,
+		httpClient: config.httpClient,
 	}, nil
 }
 

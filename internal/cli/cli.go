@@ -100,12 +100,12 @@ func runServer(args []string, stdout, stderr io.Writer, logger *zap.Logger) int 
 		logger.Warn("token secret generated for this server process")
 	}
 
-	handler, err := server.NewRouter(server.Config{
-		Store:       store,
-		TokenSecret: secret,
-		TokenTTL:    *tokenTTL,
-		Logger:      logger,
-	})
+	handler, err := server.NewRouter(
+		server.WithStore(store),
+		server.WithTokenSecret(secret),
+		server.WithTokenTTL(*tokenTTL),
+		server.WithLogger(logger),
+	)
 	if err != nil {
 		logger.Error("create server router", zap.Error(err))
 		return 1
@@ -412,10 +412,10 @@ func commonClientFlags(flags *flag.FlagSet) (*string, *string) {
 }
 
 func newClient(serverURL, token string) (*client.Client, error) {
-	return client.New(client.Config{
-		BaseURL: serverURL,
-		Token:   token,
-	})
+	return client.New(
+		client.WithBaseURL(serverURL),
+		client.WithToken(token),
+	)
 }
 
 func mergeMaps(rawJSON string, values map[string]string) (map[string]string, error) {

@@ -162,17 +162,17 @@ func startCLITestServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
 	}
-	handler, err := server.NewRouter(server.Config{
-		Store:       store,
-		TokenSecret: bytes.Repeat([]byte{7}, 32),
-		TokenTTL:    time.Hour,
-		PasswordHasher: auth.PasswordHasher{
+	handler, err := server.NewRouter(
+		server.WithStore(store),
+		server.WithTokenSecret(bytes.Repeat([]byte{7}, 32)),
+		server.WithTokenTTL(time.Hour),
+		server.WithPasswordHasher(auth.PasswordHasher{
 			Rand:       repeatingReader(1),
 			Iterations: 2,
 			SaltSize:   16,
 			KeySize:    32,
-		},
-	})
+		}),
+	)
 	if err != nil {
 		t.Fatalf("NewRouter returned error: %v", err)
 	}

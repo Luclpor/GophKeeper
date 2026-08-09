@@ -50,7 +50,7 @@ func TestClientMethods(t *testing.T) {
 	}))
 	defer server.Close()
 
-	api, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()})
+	api, err := New(WithBaseURL(server.URL), WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
@@ -82,7 +82,10 @@ func TestClientMethods(t *testing.T) {
 }
 
 func TestNewRejectsInvalidBaseURL(t *testing.T) {
-	if _, err := New(Config{BaseURL: "localhost:8080"}); err == nil {
+	if _, err := New(); err == nil {
+		t.Fatal("New returned nil error without base url")
+	}
+	if _, err := New(WithBaseURL("localhost:8080")); err == nil {
 		t.Fatal("New returned nil error for invalid base url")
 	}
 }

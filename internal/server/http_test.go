@@ -26,23 +26,23 @@ func TestHTTPAPIIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
 	}
-	handler, err := server.NewRouter(server.Config{
-		Store:       store,
-		TokenSecret: bytes.Repeat([]byte{4}, 32),
-		TokenTTL:    time.Hour,
-		PasswordHasher: auth.PasswordHasher{
+	handler, err := server.NewRouter(
+		server.WithStore(store),
+		server.WithTokenSecret(bytes.Repeat([]byte{4}, 32)),
+		server.WithTokenTTL(time.Hour),
+		server.WithPasswordHasher(auth.PasswordHasher{
 			Rand:       repeatingReader(1),
 			Iterations: 2,
 			SaltSize:   16,
 			KeySize:    32,
-		},
-	})
+		}),
+	)
 	if err != nil {
 		t.Fatalf("NewRouter returned error: %v", err)
 	}
 	testServer := newHTTPTestServer(t, handler)
 
-	api, err := client.New(client.Config{BaseURL: testServer.URL, HTTPClient: testServer.Client()})
+	api, err := client.New(client.WithBaseURL(testServer.URL), client.WithHTTPClient(testServer.Client()))
 	if err != nil {
 		t.Fatalf("client.New returned error: %v", err)
 	}
@@ -112,5 +112,11 @@ func TestHTTPAPIIntegration(t *testing.T) {
 	}
 	if _, err := api.GetRecord(context.Background(), "record-1"); err == nil {
 		t.Fatal("GetRecord after delete returned nil error")
+	}
+}
+
+func TestNewRouterRequiresStore(t *testing.T) {
+	if _, err := server.NewRouter(server.WithTokenSecret(bytes.Repeat([]byte{4}, 32))); err == nil {
+		t.Fatal("NewRouter returned nil error without store")
 	}
 }
